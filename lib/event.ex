@@ -146,7 +146,8 @@ defmodule IRC.Event do
   def handle_quit(socket, users, _parts) do
     # TODO: Broadcast quit message from _parts to all channels(?) the user is a part of
     :ets.delete(users, socket)
-    socket.close
+    # Commented out because it crashes the server!
+    # socket.close
   end
 
   defp reply(socket, msg) do
