@@ -40,8 +40,14 @@ defmodule IRC.Event do
 
   defp handle_nick(socket, users, nick) do
     {:ok, {ip, _port}} = :inet.peername(socket)
-    { :ok, { :hostent, hostname, _, _, _, _}} = :inet.gethostbyaddr(ip)
-    :ets.insert(users, { socket, %{nick: nick, hostname: hostname }})
+    case :inet.gethostbyaddr(ip) do
+      { :ok, { :hostent, hostname, _, _, _, _}} ->
+        :ets.insert(users, { socket, %{nick: nick, hostname: hostname }})
+      { :error, _error } -> 
+        ip = Enum.join(Tuple.to_list(ip), ".")
+        IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
+        :ets.insert(users, { socket, %{nick: nick, hostname: ip }})
+    end
   end
 
   defp handle_user(socket, users, username, _mode, real_name_parts) do
