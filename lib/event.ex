@@ -21,10 +21,16 @@ defmodule IRC.Event do
           handle_cap(socket, whatever)
         { "JOIN", [channel], socket } ->
           handle_join(socket, users, channels, channel)
+        { "PART", [channel | part_message], socket } ->
+          handle_part(socket, users, channels, channel, part_message)
         { "MODE", [channel], socket } ->
           handle_mode(socket, channels, channel)
         { "PRIVMSG", [channel | parts ], socket } ->
           handle_privmsg(socket, users, channels, channel, parts)
+        { "WHO", [channel], socket } ->
+          handle_who(socket, channel)
+        { "QUIT", parts, socket } ->
+          handle_quit(socket, users, parts)
         _ ->
           IO.puts "Unhandled event!"
           IO.inspect(event)
@@ -88,8 +94,25 @@ defmodule IRC.Event do
     reply(socket, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
   end
 
-  defp handle_mode(socket, channels, channel) do
+  defp handle_part(socket, users, channels, channel, part_message) do
+    user = lookup(users, socket)
+    ident = ident_for(user)
 
+    [{ _key, channel_data }] = :ets.lookup(channels, channel)
+
+    part_message = Enum.join(part_message, " ")
+    Enum.each(channel_data.users, fn (user) ->
+      reply(user, "#{ident} PART #{channel} #{part_message}")
+    end)
+
+    # User has left the channel, so delete them from list.
+    users = Enum.reject(channel_data.users, fn (user) -> user == socket end)
+    channel_data = Dict.put(channel_data, :users, users)
+    :ets.insert(channels, { channel, channel_data })
+  end
+
+  defp handle_mode(_socket, _channels, _channel) do
+    # TODO
   end
 
   defp handle_privmsg(socket, users, channels, channel, parts) do
@@ -108,6 +131,18 @@ defmodule IRC.Event do
     reply(socket, ":irc.localhost PONG")
   end
 
+  def handle_who(_socket, _channel) do
+    # TODO: implement
+    # The IRC spec isn't helpful for this
+    # Probably best to check with a real IRC server and see its response to this command
+  end
+
+  def handle_quit(socket, users, _parts) do
+    # TODO: Broadcast quit message from _parts to all channels(?) the user is a part of
+    :ets.delete(users, socket)
+    socket.close
+  end
+
   defp reply(socket, msg) do
     IO.puts("-> #{msg}")
     :gen_tcp.send(socket, "#{msg} \r\n")
@@ -120,6 +155,6 @@ defmodule IRC.Event do
 
   defp ident_for(user) do
     username = String.slice(user.username, 0..7)
-    ident = ":#{user.nick}!~#{username}@#{user.hostname}"
+    ":#{user.nick}!~#{username}@#{user.hostname}"
   end
 end
