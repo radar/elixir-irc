@@ -93,7 +93,6 @@ defmodule IRC.Event do
   end
 
   defp handle_privmsg(socket, users, channels, channel, parts) do
-    IO.inspect channel
     [{ _key, channel_data }] = :ets.lookup(channels, channel)
     [{ _key, user_data }] = :ets.lookup(users, socket)
     ident = ident_for(user_data)
