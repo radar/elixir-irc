@@ -96,7 +96,8 @@ defmodule IRC.Event do
     # Show the topic
     reply(socket, ":irc.localhost 332 #{channel} :this is a topic and it is a grand topic")
     # And a list of names
-    reply(socket, ":irc.localhost 353 #{user.nick} = #{channel} Radar NotRadar")
+    names = Enum.join(channel_data.users, " ")
+    reply(socket, ":irc.localhost 353 #{user.nick} = #{channel} #{names}")
     reply(socket, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
   end
 
