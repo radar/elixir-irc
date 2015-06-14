@@ -14,7 +14,7 @@ defmodule IRC.Event do
     for event <- stream do
       case event do
         { "NICK", [nick], socket } ->
-          handle_nick(socket, users, nick)
+          handle_nick(socket, users, channels, nick)
         { "USER", [username, mode, _ | real_name_parts], socket } ->
           handle_user(socket, users, username, mode, real_name_parts)
         { "CAP" , [whatever], socket } ->
@@ -38,21 +38,33 @@ defmodule IRC.Event do
     end
   end
 
-  defp handle_nick(socket, users, nick) do
+  defp handle_nick(socket, users, channels, nick) do
     case lookup(users, socket) do
       nil ->
         {:ok, {ip, _port}} = :inet.peername(socket)
         case :inet.gethostbyaddr(ip) do
           { :ok, { :hostent, hostname, _, _, _, _}} ->
-            :ets.insert(users, { socket, %{nick: nick, hostname: hostname }})
+            :ets.insert(users, { socket, %{nick: nick, hostname: hostname, channels: []}})
           { :error, _error } -> 
             ip = Enum.join(Tuple.to_list(ip), ".")
             IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
-            :ets.insert(users, { socket, %{nick: nick, hostname: ip }})
+            :ets.insert(users, { socket, %{nick: nick, hostname: ip, channels: []}})
         end
-      user_data ->
-        user_data = Dict.put(user_data, :nick, nick)
-        :ets.insert(users, { socket, user_data })
+      event_user ->
+        # Need to set ident here, as the reply needs to contain old nick
+        ident = ident_for(event_user)
+        event_user = Dict.put(event_user, :nick, nick)
+        :ets.insert(users, { socket, event_user })
+        msg = "#{ident} NICK #{nick}"
+        event_user.channels 
+          |> Enum.each(
+            fn (channel) ->
+              [{ _key, channel_data }] = :ets.lookup(channels, channel)
+              Enum.each(channel_data.users, fn (user) ->
+                reply(user, msg)
+              end)
+            end
+          )
     end
   end
 
@@ -87,6 +99,10 @@ defmodule IRC.Event do
     channel_users = [ socket | channel_data.users ]
     channel_data = Dict.put(channel_data, :users, channel_users)
     :ets.insert(channels, { channel, channel_data })
+
+    # Add this channel to the list of channels for the user
+    user = Dict.put(user, :channels, [ channel | user.channels ])
+    :ets.insert(users, { socket, user })
 
     Enum.each(channel_users, fn (user) ->
       reply(user, "#{ident} JOIN #{channel}")
