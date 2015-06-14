@@ -39,14 +39,20 @@ defmodule IRC.Event do
   end
 
   defp handle_nick(socket, users, nick) do
-    {:ok, {ip, _port}} = :inet.peername(socket)
-    case :inet.gethostbyaddr(ip) do
-      { :ok, { :hostent, hostname, _, _, _, _}} ->
-        :ets.insert(users, { socket, %{nick: nick, hostname: hostname }})
-      { :error, _error } -> 
-        ip = Enum.join(Tuple.to_list(ip), ".")
-        IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
-        :ets.insert(users, { socket, %{nick: nick, hostname: ip }})
+    case lookup(users, socket) do
+      nil ->
+        {:ok, {ip, _port}} = :inet.peername(socket)
+        case :inet.gethostbyaddr(ip) do
+          { :ok, { :hostent, hostname, _, _, _, _}} ->
+            :ets.insert(users, { socket, %{nick: nick, hostname: hostname }})
+          { :error, _error } -> 
+            ip = Enum.join(Tuple.to_list(ip), ".")
+            IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
+            :ets.insert(users, { socket, %{nick: nick, hostname: ip }})
+        end
+      user_data ->
+        user_data = Dict.put(user_data, :nick, nick)
+        :ets.insert(users, { socket, user_data })
     end
   end
 
@@ -66,37 +72,32 @@ defmodule IRC.Event do
     # TODO: WTF is CAP?
   end
 
-  # REALITY:
-  # < :helpa-test!~helpa-tes@1.149.169.255 JOIN #logga
-  # << :wilhelm.freenode.net 353 helpa-test = #logga :helpa-test helpa Radar
-  # << :wilhelm.freenode.net 366 helpa-test #logga :End of /NAMES list.
-
-  # This program:
-  # -> :Radar!~textual@localhost JOIN #logga
-  # -> :irc.localhost 332 #logga :this is a topic and it is a grand topic
-  # -> :irc.localhost 353 Radar = #logga :Radar
-  # -> :irc.localhost 366 Radar #logga :End of /NAMES list.
-
   defp handle_join(socket, users, channels, channel) do
     user = lookup(users, socket)
     ident = ident_for(user)
+
+    # TODO: Should probably add a list of channels to the user too
+    # This is so we can notify their channels when they quit
+    # Oh, and when they change nicks we'll need to notify the channels too
 
     # Attempt to create the channel if it doesn't exist already.
     :ets.insert_new(channels, { channel, %{users: []} })
     [{ _key, channel_data }] = :ets.lookup(channels, channel)
     # User has joined channel, so add them to the list.
-    users = [ socket | channel_data.users ]
-    channel_data = Dict.put(channel_data, :users, users)
+    channel_users = [ socket | channel_data.users ]
+    channel_data = Dict.put(channel_data, :users, channel_users)
     :ets.insert(channels, { channel, channel_data })
 
-    Enum.each(users, fn (user) ->
+    Enum.each(channel_users, fn (user) ->
       reply(user, "#{ident} JOIN #{channel}")
     end)
 
     # Show the topic
     reply(socket, ":irc.localhost 332 #{channel} :this is a topic and it is a grand topic")
     # And a list of names
-    names = Enum.join(channel_data.users, " ")
+    names = channel_data.users
+      |> Enum.map(fn (user) -> lookup(users, user).nick end)
+      |> Enum.join(" ")
     reply(socket, ":irc.localhost 353 #{user.nick} = #{channel} #{names}")
     reply(socket, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
   end
@@ -146,6 +147,7 @@ defmodule IRC.Event do
 
   def handle_quit(socket, users, _parts) do
     # TODO: Broadcast quit message from _parts to all channels(?) the user is a part of
+    # Remove user from all channels they're a part of
     :ets.delete(users, socket)
     # Commented out because it crashes the server!
     # socket.close
@@ -157,8 +159,12 @@ defmodule IRC.Event do
   end
 
   defp lookup(users, socket) do
-    [{ _key, data }] = :ets.lookup(users, socket)
-    data
+    case :ets.lookup(users, socket) do
+      [{ _key, data }] -> 
+        data
+      [] ->
+        nil
+    end
   end
 
   defp ident_for(user) do
