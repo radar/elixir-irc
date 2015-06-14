@@ -30,7 +30,7 @@ defmodule IRC.Event do
         { "WHO", [channel], socket } ->
           handle_who(socket, channel)
         { "QUIT", parts, socket } ->
-          handle_quit(socket, users, parts)
+          handle_quit(socket, channels, users, ["QUIT" | parts])
         _ ->
           IO.puts "Unhandled event!"
           IO.inspect(event)
@@ -56,15 +56,7 @@ defmodule IRC.Event do
         event_user = Dict.put(event_user, :nick, nick)
         :ets.insert(users, { socket, event_user })
         msg = "#{ident} NICK #{nick}"
-        event_user.channels 
-          |> Enum.each(
-            fn (channel) ->
-              [{ _key, channel_data }] = :ets.lookup(channels, channel)
-              Enum.each(channel_data.users, fn (user) ->
-                reply(user, msg)
-              end)
-            end
-          )
+        mass_broadcast_for(channels, event_user, msg)
     end
   end
 
@@ -104,9 +96,7 @@ defmodule IRC.Event do
     user = Dict.put(user, :channels, [ channel | user.channels ])
     :ets.insert(users, { socket, user })
 
-    Enum.each(channel_users, fn (user) ->
-      reply(user, "#{ident} JOIN #{channel}")
-    end)
+    channel_broadcast(channel_users, "#{ident} JOIN #{channel}")
 
     # Show the topic
     reply(socket, ":irc.localhost 332 #{channel} :this is a topic and it is a grand topic")
@@ -125,9 +115,7 @@ defmodule IRC.Event do
     [{ _key, channel_data }] = :ets.lookup(channels, channel)
 
     part_message = Enum.join(part_message, " ")
-    Enum.each(channel_data.users, fn (user) ->
-      reply(user, "#{ident} PART #{channel} #{part_message}")
-    end)
+    channel_broadcast(channel_data.users, "#{ident} PART #{channel} #{part_message}")
 
     # User has left the channel, so delete them from list.
     users = Enum.reject(channel_data.users, fn (user) -> user == socket end)
@@ -144,11 +132,8 @@ defmodule IRC.Event do
     [{ _key, user_data }] = :ets.lookup(users, socket)
     ident = ident_for(user_data)
     message = Enum.join(parts, " ") #|> String.slice(1..-1)
-    Enum.each channel_data.users, fn (user) ->
-      unless user == socket do
-        reply(user, "#{ident} PRIVMSG #{channel} #{message}")
-      end
-    end
+    users = Enum.reject(channel_data.users, fn (user) -> user == socket end)
+    channel_broadcast(users, "#{ident} PRIVMSG #{channel} #{message}")
   end
 
   def handle_ping(socket) do
@@ -161,9 +146,11 @@ defmodule IRC.Event do
     # Probably best to check with a real IRC server and see its response to this command
   end
 
-  def handle_quit(socket, users, _parts) do
-    # TODO: Broadcast quit message from _parts to all channels(?) the user is a part of
-    # Remove user from all channels they're a part of
+  def handle_quit(socket, channels, users, parts) do
+    user = lookup(users, socket)
+    msg = "#{ident_for(user)} #{Enum.join(parts, " ")}"
+    mass_broadcast_for(channels, user, msg)
+    # TODO: Remove user from all channels they're a part of
     :ets.delete(users, socket)
     # Commented out because it crashes the server!
     # socket.close
@@ -172,6 +159,25 @@ defmodule IRC.Event do
   defp reply(socket, msg) do
     IO.puts("-> #{msg}")
     :gen_tcp.send(socket, "#{msg} \r\n")
+  end
+
+  # Used to broadcast events like QUIT or NICK.
+  def mass_broadcast_for(channels, event_user, msg) do
+    event_user.channels
+      |> Enum.each(
+        fn (channel) ->
+          [{ _key, channel_data }] = :ets.lookup(channels, channel)
+          Enum.each(channel_data.users, fn (user) ->
+            reply(user, msg)
+          end)
+        end
+      )
+  end
+
+  def channel_broadcast(users, message) do
+    Enum.each users, fn (user) ->
+      reply(user, message)
+    end
   end
 
   defp lookup(users, socket) do
