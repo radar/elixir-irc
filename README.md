@@ -20,8 +20,6 @@ Naive connection implementation is probably my "favourite" part. What really sho
 
 There's some methods in `IRC.Event` which have `TODO`s attached to them. This is because the IRC spec was written a long time ago with people with as much clue about specs as I have on Elixir. Therefore it's hard to know what I should be sending back for some of the messages.
 
-Ignore `IRC.Client`. It was an attempt to create an IRC client in Elixir... but I'm just using Textual instead.
-
 ## TODO
 
 * How to make this an OTP application?
