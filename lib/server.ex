@@ -1,9 +1,4 @@
 defmodule IRC.Server do
-  use Application
-
-  def start(_type, _args) do
-
-  end
 
   def accept(port \\ 6667) do
     GenEvent.start_link(name: Events)
