@@ -84,7 +84,7 @@ defmodule IRC.Event do
     names = channel_data.users
       |> Enum.map(fn (user) -> lookup_user(user).nick end)
       |> Enum.join(" ")
-    reply(client, ":irc.localhost 353 #{user.nick} = #{channel} #{names}")
+    reply(client, ":irc.localhost 353 #{user.nick} = #{channel} :#{names}")
     reply(client, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
   end
 
