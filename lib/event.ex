@@ -120,8 +120,7 @@ defmodule IRC.Event do
     channel_data = lookup_channel(channel)
     user = lookup_user(client)
     msg = "#{ident_for(user)} KICK #{channel} #{Enum.join(parts, " ")}"
-    users = Enum.reject(channel_data.users, fn (user) -> user == client end)
-    channel_broadcast(users, msg)
+    channel_broadcast(channel_data.users, msg)
   end
 
   defp handle_who(_socket, _channel) do
