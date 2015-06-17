@@ -15,8 +15,6 @@ defmodule IRC.Event do
       case event do
         { "NICK", [nick], client } ->
           handle_nick(client, nick)
-        { "USER", [username, mode, _ | real_name_parts], client } ->
-          handle_user(client, username, mode, real_name_parts)
         { "CAP" , [whatever], client } ->
           handle_cap(client, whatever)
         { "JOIN", [channel], client } ->
@@ -40,39 +38,18 @@ defmodule IRC.Event do
     end
   end
 
-  defp handle_nick(client, nick) do
-    case lookup_user(client) do
-      nil ->
-        {:ok, {ip, _port}} = :inet.peername(client)
-        case :inet.gethostbyaddr(ip) do
-          { :ok, { :hostent, hostname, _, _, _, _}} ->
-            data = %{nick: nick, hostname: hostname, channels: []}
-            Agent.update(Users, fn users -> Dict.put(users, client, data) end)
-          { :error, _error } -> 
-            ip = Enum.join(Tuple.to_list(ip), ".")
-            IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
-            data = %{nick: nick, hostname: ip, channels: []}
-            Agent.update(Users, fn users -> Dict.put(users, client, data) end)
-        end
-      event_user ->
-        # Need to set ident here, as the reply needs to contain old nick
-        ident = ident_for(event_user)
-        Agent.update(Users, fn users -> Dict.put(users[client], :nick, nick) end)
-        msg = "#{ident} NICK #{nick}"
-        mass_broadcast_for(event_user, msg)
-    end
+  def reply(client, msg) do
+    IO.puts("-> #{msg}")
+    :gen_tcp.send(client, "#{msg}\r\n")
   end
 
-  defp handle_user(client, username, _mode, real_name_parts) do
-    user = lookup_user(client)
-    user = Dict.put_new(user, :username, username)
-    user = Dict.put_new(user, :real_name, Enum.join(real_name_parts))
-    Agent.update(Users, fn users -> Dict.put(users, client, user) end)
-    nick = user.nick
-    reply(client, ":irc.localhost 001 #{nick} Welcome to the IRC network.")
-    reply(client, ":irc.localhost 002 #{nick} Your host is exIRC, running version 0.0.1.")
-    reply(client, ":irc.localhost 003 #{nick} exIRC 0.0.1 +i +int")
-    reply(client, ":irc.localhost 422 :MOTD File is missing")
+  defp handle_nick(client, nick) do
+    event_user = lookup_user(client)
+    # Need to set ident here, as the reply needs to contain old nick
+    ident = event_user |> ident_for
+    Agent.update(Users, fn users -> Dict.put(users[client], :nick, nick) end)
+    msg = "#{ident} NICK #{nick}"
+    mass_broadcast_for(event_user, msg)
   end
 
   defp handle_cap(_socket, _msg) do
@@ -147,17 +124,13 @@ defmodule IRC.Event do
     channel_broadcast(users, msg)
   end
 
-  def handle_ping(client) do
-    reply(client, ":irc.localhost PONG")
-  end
-
-  def handle_who(_socket, _channel) do
+  defp handle_who(_socket, _channel) do
     # TODO: implement
     # The IRC spec isn't helpful for this
     # Probably best to check with a real IRC server and see its response to this command
   end
 
-  def handle_quit(client, parts) do
+  defp handle_quit(client, parts) do
     user = lookup_user(client)
     msg = "#{ident_for(user)} #{Enum.join(parts, " ")}"
     mass_broadcast_for(user, msg)
@@ -167,13 +140,8 @@ defmodule IRC.Event do
     # client.close
   end
 
-  defp reply(client, msg) do
-    IO.puts("-> #{msg}")
-    :gen_tcp.send(client, "#{msg} \r\n")
-  end
-
   # Used to broadcast events like QUIT or NICK.
-  def mass_broadcast_for(event_user, msg) do
+  defp mass_broadcast_for(event_user, msg) do
     event_user.channels
       |> Enum.each(
         fn (channel) ->
@@ -184,7 +152,7 @@ defmodule IRC.Event do
       )
   end
 
-  def channel_broadcast(users, message) do
+  defp channel_broadcast(users, message) do
     Enum.each users, fn (user) ->
       reply(user, message)
     end
