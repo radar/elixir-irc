@@ -1,36 +1,38 @@
 defmodule IRC.Event do
   use GenEvent
 
-  def handle_event({ event, parts, socket }, messages) do
-    { :ok, [{event, parts, socket} | messages ]}
+  def handle_event({ event, parts, client }, messages) do
+    { :ok, [{event, parts, client} | messages ]}
   end
 
   def handle_call(:messages, messages) do
     { :ok, messages, [] }
   end
 
-  def handle_events(pid, users, channels) do
-    stream = GenEvent.stream(pid)
+  def handle_events do
+    stream = GenEvent.stream(Events)
     for event <- stream do
       case event do
-        { "NICK", [nick], socket } ->
-          handle_nick(socket, users, channels, nick)
-        { "USER", [username, mode, _ | real_name_parts], socket } ->
-          handle_user(socket, users, username, mode, real_name_parts)
-        { "CAP" , [whatever], socket } ->
-          handle_cap(socket, whatever)
-        { "JOIN", [channel], socket } ->
-          handle_join(socket, users, channels, channel)
-        { "PART", [channel | part_message], socket } ->
-          handle_part(socket, users, channels, channel, part_message)
-        { "MODE", [channel], socket } ->
-          handle_mode(socket, channels, channel)
-        { "PRIVMSG", [channel | parts ], socket } ->
-          handle_privmsg(socket, users, channels, channel, parts)
-        { "WHO", [channel], socket } ->
-          handle_who(socket, channel)
-        { "QUIT", parts, socket } ->
-          handle_quit(socket, channels, users, ["QUIT" | parts])
+        { "NICK", [nick], client } ->
+          handle_nick(client, nick)
+        { "USER", [username, mode, _ | real_name_parts], client } ->
+          handle_user(client, username, mode, real_name_parts)
+        { "CAP" , [whatever], client } ->
+          handle_cap(client, whatever)
+        { "JOIN", [channel], client } ->
+          handle_join(client, channel)
+        { "PART", [channel | part_message], client } ->
+          handle_part(client, channel, part_message)
+        { "MODE", [channel], client } ->
+          handle_mode(client, channel)
+        { "PRIVMSG", [channel | parts ], client } ->
+          handle_privmsg(client, channel, parts)
+        { "WHO", [channel], client } ->
+          handle_who(client, channel)
+        { "QUIT", parts, client } ->
+          handle_quit(client, ["QUIT" | parts])
+        { "KICK", [channel | parts], client } ->
+          handle_kick(client, channel, parts)
         _ ->
           IO.puts "Unhandled event!"
           IO.inspect(event)
@@ -38,46 +40,47 @@ defmodule IRC.Event do
     end
   end
 
-  defp handle_nick(socket, users, channels, nick) do
-    case lookup(users, socket) do
+  defp handle_nick(client, nick) do
+    case lookup_user(client) do
       nil ->
-        {:ok, {ip, _port}} = :inet.peername(socket)
+        {:ok, {ip, _port}} = :inet.peername(client)
         case :inet.gethostbyaddr(ip) do
           { :ok, { :hostent, hostname, _, _, _, _}} ->
-            :ets.insert(users, { socket, %{nick: nick, hostname: hostname, channels: []}})
+            data = %{nick: nick, hostname: hostname, channels: []}
+            Agent.update(Users, fn users -> Dict.put(users, client, data) end)
           { :error, _error } -> 
             ip = Enum.join(Tuple.to_list(ip), ".")
             IO.puts "Could not resolve hostname for #{ip}. Using IP instead."
-            :ets.insert(users, { socket, %{nick: nick, hostname: ip, channels: []}})
+            data = %{nick: nick, hostname: ip, channels: []}
+            Agent.update(Users, fn users -> Dict.put(users, client, data) end)
         end
       event_user ->
         # Need to set ident here, as the reply needs to contain old nick
         ident = ident_for(event_user)
-        event_user = Dict.put(event_user, :nick, nick)
-        :ets.insert(users, { socket, event_user })
+        Agent.update(Users, fn users -> Dict.put(users[client], :nick, nick) end)
         msg = "#{ident} NICK #{nick}"
-        mass_broadcast_for(channels, event_user, msg)
+        mass_broadcast_for(event_user, msg)
     end
   end
 
-  defp handle_user(socket, users, username, _mode, real_name_parts) do
-    user = lookup(users, socket)
+  defp handle_user(client, username, _mode, real_name_parts) do
+    user = lookup_user(client)
     user = Dict.put_new(user, :username, username)
     user = Dict.put_new(user, :real_name, Enum.join(real_name_parts))
-    :ets.insert(users, { socket, user })
+    Agent.update(Users, fn users -> Dict.put(users, client, user) end)
     nick = user.nick
-    reply(socket, ":irc.localhost 001 #{nick} Welcome to the IRC network.")
-    reply(socket, ":irc.localhost 002 #{nick} Your host is exIRC, running version 0.0.1.")
-    reply(socket, ":irc.localhost 003 #{nick} exIRC 0.0.1 +i +int")
-    reply(socket, ":irc.localhost 422 :MOTD File is missing")
+    reply(client, ":irc.localhost 001 #{nick} Welcome to the IRC network.")
+    reply(client, ":irc.localhost 002 #{nick} Your host is exIRC, running version 0.0.1.")
+    reply(client, ":irc.localhost 003 #{nick} exIRC 0.0.1 +i +int")
+    reply(client, ":irc.localhost 422 :MOTD File is missing")
   end
 
   defp handle_cap(_socket, _msg) do
     # TODO: WTF is CAP?
   end
 
-  defp handle_join(socket, users, channels, channel) do
-    user = lookup(users, socket)
+  defp handle_join(client, channel) do
+    user = lookup_user(client)
     ident = ident_for(user)
 
     # TODO: Should probably add a list of channels to the user too
@@ -85,59 +88,67 @@ defmodule IRC.Event do
     # Oh, and when they change nicks we'll need to notify the channels too
 
     # Attempt to create the channel if it doesn't exist already.
-    :ets.insert_new(channels, { channel, %{users: []} })
-    [{ _key, channel_data }] = :ets.lookup(channels, channel)
+    Agent.update(Channels, fn channels -> Dict.put_new(channels, channel, %{users: []}) end)
+    channel_data = Agent.get(Channels, fn channels -> channels[channel] end)
     # User has joined channel, so add them to the list.
-    channel_users = [ socket | channel_data.users ]
+    channel_users = [ client | channel_data.users ]
     channel_data = Dict.put(channel_data, :users, channel_users)
-    :ets.insert(channels, { channel, channel_data })
+    Agent.update(Channels, fn channels -> Dict.put(channels, channel, channel_data) end)
 
     # Add this channel to the list of channels for the user
     user = Dict.put(user, :channels, [ channel | user.channels ])
-    :ets.insert(users, { socket, user })
+    Agent.update(Users, fn users -> Dict.put(users, client, user) end)
 
     channel_broadcast(channel_users, "#{ident} JOIN #{channel}")
 
     # Show the topic
-    reply(socket, ":irc.localhost 332 #{channel} :this is a topic and it is a grand topic")
+    reply(client, ":irc.localhost 332 #{user.nick} #{channel} :this is a topic and it is a grand topic")
     # And a list of names
     names = channel_data.users
-      |> Enum.map(fn (user) -> lookup(users, user).nick end)
+      |> Enum.map(fn (user) -> lookup_user(user).nick end)
       |> Enum.join(" ")
-    reply(socket, ":irc.localhost 353 #{user.nick} = #{channel} #{names}")
-    reply(socket, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
+    reply(client, ":irc.localhost 353 #{user.nick} = #{channel} #{names}")
+    reply(client, ":irc.localhost 366 #{user.nick} #{channel} :End of /NAMES list.")
   end
 
-  defp handle_part(socket, users, channels, channel, part_message) do
-    user = lookup(users, socket)
+  defp handle_part(client, channel, part_message) do
+    user = lookup_user(client)
     ident = ident_for(user)
 
-    [{ _key, channel_data }] = :ets.lookup(channels, channel)
+    channel_data = Agent.get(Channels, fn channels -> channels[channel] end)
 
     part_message = Enum.join(part_message, " ")
     channel_broadcast(channel_data.users, "#{ident} PART #{channel} #{part_message}")
 
     # User has left the channel, so delete them from list.
-    users = Enum.reject(channel_data.users, fn (user) -> user == socket end)
+    users = Enum.reject(channel_data.users, fn (user) -> user == client end)
     channel_data = Dict.put(channel_data, :users, users)
-    :ets.insert(channels, { channel, channel_data })
+    Agent.update(Channels, fn channels -> Dict.put(channels, channel, channel_data) end)
   end
 
-  defp handle_mode(_socket, _channels, _channel) do
+  defp handle_mode(_socket, _channel) do
     # TODO
   end
 
-  defp handle_privmsg(socket, users, channels, channel, parts) do
-    [{ _key, channel_data }] = :ets.lookup(channels, channel)
-    [{ _key, user_data }] = :ets.lookup(users, socket)
-    ident = ident_for(user_data)
+  defp handle_privmsg(client, channel, parts) do
+    channel_data = lookup_channel(channel)
+    user = lookup_user(client)
+    ident = ident_for(user)
     message = Enum.join(parts, " ") #|> String.slice(1..-1)
-    users = Enum.reject(channel_data.users, fn (user) -> user == socket end)
+    users = Enum.reject(channel_data.users, fn (user) -> user == client end)
     channel_broadcast(users, "#{ident} PRIVMSG #{channel} #{message}")
   end
 
-  def handle_ping(socket) do
-    reply(socket, ":irc.localhost PONG")
+  defp handle_kick(client, channel, parts) do
+    channel_data = lookup_channel(channel)
+    user = lookup_user(client)
+    msg = "#{ident_for(user)} KICK #{channel} #{Enum.join(parts, " ")}"
+    users = Enum.reject(channel_data.users, fn (user) -> user == client end)
+    channel_broadcast(users, msg)
+  end
+
+  def handle_ping(client) do
+    reply(client, ":irc.localhost PONG")
   end
 
   def handle_who(_socket, _channel) do
@@ -146,28 +157,27 @@ defmodule IRC.Event do
     # Probably best to check with a real IRC server and see its response to this command
   end
 
-  def handle_quit(socket, channels, users, parts) do
-    user = lookup(users, socket)
+  def handle_quit(client, parts) do
+    user = lookup_user(client)
     msg = "#{ident_for(user)} #{Enum.join(parts, " ")}"
-    mass_broadcast_for(channels, user, msg)
+    mass_broadcast_for(user, msg)
     # TODO: Remove user from all channels they're a part of
-    :ets.delete(users, socket)
+    Agent.update(Users, fn users -> Dict.delete(users, client) end)
     # Commented out because it crashes the server!
-    # socket.close
+    # client.close
   end
 
-  defp reply(socket, msg) do
+  defp reply(client, msg) do
     IO.puts("-> #{msg}")
-    :gen_tcp.send(socket, "#{msg} \r\n")
+    :gen_tcp.send(client, "#{msg} \r\n")
   end
 
   # Used to broadcast events like QUIT or NICK.
-  def mass_broadcast_for(channels, event_user, msg) do
+  def mass_broadcast_for(event_user, msg) do
     event_user.channels
       |> Enum.each(
         fn (channel) ->
-          [{ _key, channel_data }] = :ets.lookup(channels, channel)
-          Enum.each(channel_data.users, fn (user) ->
+          Enum.each(lookup_channel(channel).users, fn (user) ->
             reply(user, msg)
           end)
         end
@@ -180,17 +190,16 @@ defmodule IRC.Event do
     end
   end
 
-  defp lookup(users, socket) do
-    case :ets.lookup(users, socket) do
-      [{ _key, data }] -> 
-        data
-      [] ->
-        nil
-    end
-  end
-
   defp ident_for(user) do
     username = String.slice(user.username, 0..7)
     ":#{user.nick}!~#{username}@#{user.hostname}"
+  end
+
+  defp lookup_user(client) do
+    Agent.get(Users, fn users -> users[client] end)
+  end
+
+  defp lookup_channel(channel) do
+    Agent.get(Channels, fn channels -> channels[channel] end)
   end
 end

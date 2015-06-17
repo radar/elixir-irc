@@ -1,49 +1,51 @@
 defmodule IRC.Server do
-  use GenEvent
+  use Application
 
-  def start(port \\ 6667) do
-    { :ok, event_pid } = GenEvent.start_link()
-    GenEvent.add_handler(event_pid, IRC.Event, [])
+  def start(_type, _args) do
 
-    users = :ets.new(:users, [])
-    channels = :ets.new(:channels, [])
+  end
 
-    case :gen_tcp.listen(port, [:binary, {:active, false}]) do
-      { :ok, l_socket } ->
+  def accept(port \\ 6667) do
+    GenEvent.start_link(name: Events)
+    GenEvent.add_handler(Events, IRC.Event, [])
+
+    Agent.start_link(fn -> %{} end, name: Users)
+    Agent.start_link(fn -> %{} end, name: Channels)
+
+    case :gen_tcp.listen(port, [:binary, packet: :line, active: false, reuseaddr: true]) do
+      { :ok, socket } ->
         
-        Task.async(fn -> accept(l_socket, event_pid) end)
-        Task.async(fn ->
-          IO.puts "IRC Server started up and is now accepting requests."  
-        end)
+        Task.async(fn -> loop_acceptor(socket) end)
+        IO.puts "IRC Server started up and is now accepting requests."  
+
+        IRC.Event.handle_events
       { :error, :eaddrinuse } ->
         IO.puts "Address already in use"
         System.halt(1)
     end
 
-    IRC.Event.handle_events(event_pid, users, channels)
   end
 
-  defp accept(l_socket, event_pid) do
-    { :ok, socket } = :gen_tcp.accept(l_socket)
-    Task.async(fn -> listen(socket, event_pid) end)
-    accept(l_socket, event_pid)
+  defp loop_acceptor(socket) do
+    { :ok, client } = :gen_tcp.accept(socket)
+    {:ok, pid} = Task.Supervisor.start_child(IRC.Server.TaskSupervisor, fn -> serve(client) end)
+    :ok = :gen_tcp.controlling_process(client, pid)
+    loop_acceptor(socket)
   end
 
-  defp listen(socket, event_pid) do
-    case :gen_tcp.recv(socket, 0) do
+  defp serve(client) do
+    case :gen_tcp.recv(client, 0) do
       { :ok, data } ->
-        IO.puts "<- #{String.strip(data)}"
-        String.strip(data) 
-          |> String.split("\r\n")
-          |> Enum.each(fn (string) -> process(String.split(string, " "), socket, event_pid) end)
-        listen(socket, event_pid)
+        IO.inspect "<- #{String.strip(data)}"
+        String.strip(data) |> String.split(" ") |> process(client)
+        serve(client)
       { :error, :closed } ->
         IO.puts "Connection closed by client."
     end
   end
 
-  defp process([event | parts], socket, event_pid) do
-    GenEvent.notify(event_pid, { event, parts, socket })
+  defp process([event | parts], client) do
+    GenEvent.notify(Events, { event, parts, client })
   end
 end
 

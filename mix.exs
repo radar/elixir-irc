@@ -1,4 +1,4 @@
-defmodule Irc.Mixfile do
+defmodule IRC.Mixfile do
   use Mix.Project
 
   def project do
@@ -12,7 +12,8 @@ defmodule Irc.Mixfile do
   #
   # Type `mix help compile.app` for more information
   def application do
-    [applications: [:logger]]
+    [applications: [:logger],
+     mod: {IRC, []}]
   end
 
   # Dependencies can be Hex packages:
