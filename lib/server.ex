@@ -75,7 +75,7 @@ defmodule IRC.Server do
   defp serve(client) do
     case :gen_tcp.recv(client, 0) do
       { :ok, data } ->
-        IO.inspect "<- #{String.strip(data)}"
+        IO.puts "<- #{String.strip(data)}"
         String.strip(data) |> String.split(" ") |> process(client)
         serve(client)
       { :error, :closed } ->
