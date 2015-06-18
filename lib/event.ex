@@ -31,6 +31,8 @@ defmodule IRC.Event do
           handle_quit(client, ["QUIT" | parts])
         { "KICK", [channel | parts], client } ->
           handle_kick(client, channel, parts)
+        { "PING", [name], client } ->
+          handle_ping(client, name)
         _ ->
           IO.puts "Unhandled event!"
           IO.inspect(event)
@@ -60,12 +62,8 @@ defmodule IRC.Event do
     user = lookup_user(client)
     ident = ident_for(user)
 
-    # TODO: Should probably add a list of channels to the user too
-    # This is so we can notify their channels when they quit
-    # Oh, and when they change nicks we'll need to notify the channels too
-
     # Attempt to create the channel if it doesn't exist already.
-    Agent.update(Channels, fn channels -> Dict.put_new(channels, channel, %{users: []}) end)
+    create_new_channel(channel)
     channel_data = Agent.get(Channels, fn channels -> channels[channel] end)
     # User has joined channel, so add them to the list.
     channel_users = [ client | channel_data.users ]
@@ -108,12 +106,18 @@ defmodule IRC.Event do
   end
 
   defp handle_privmsg(client, channel, parts) do
+    create_new_channel(channel)
     channel_data = lookup_channel(channel)
     user = lookup_user(client)
     ident = ident_for(user)
     message = Enum.join(parts, " ") #|> String.slice(1..-1)
-    users = Enum.reject(channel_data.users, fn (user) -> user == client end)
-    channel_broadcast(users, "#{ident} PRIVMSG #{channel} #{message}")
+    case Enum.any?(channel_data.users, fn (user) -> user == client end) do
+      true ->
+        users = Enum.reject(channel_data.users, fn (user) -> user == client end)
+        channel_broadcast(users, "#{ident} PRIVMSG #{channel} #{message}")
+      false ->
+      reply(client, ":irc.localhost 404 #{user.nick} #{channel} :Cannot send to channel")
+    end
   end
 
   defp handle_kick(client, channel, parts) do
@@ -137,6 +141,10 @@ defmodule IRC.Event do
     Agent.update(Users, fn users -> Dict.delete(users, client) end)
     # Commented out because it crashes the server!
     # client.close
+  end
+
+  defp handle_ping(client, name) do
+    reply(client, "PONG #{name}")
   end
 
   # Used to broadcast events like QUIT or NICK.
@@ -168,5 +176,9 @@ defmodule IRC.Event do
 
   defp lookup_channel(channel) do
     Agent.get(Channels, fn channels -> channels[channel] end)
+  end
+
+  defp create_new_channel(channel) do
+    Agent.update(Channels, fn channels -> Dict.put_new(channels, channel, %{users: []}) end)
   end
 end
